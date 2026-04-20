@@ -997,6 +997,16 @@ function _startFirebaseListener() {
     var orders = [];
     if (data) { Object.keys(data).forEach(function(k){ orders.push(data[k]); }); }
     orders = orders.filter(function(o){ return !o.init; });
+
+    // If an order is currently being saved locally, preserve our local status
+    // so Firebase doesn't flash it back to pending before the write completes
+    orders.forEach(function(o) {
+      if (_savingOrders && _savingOrders[o.orderNum]) {
+        var local = _allOrders.filter(function(x){ return x.orderNum === o.orderNum; })[0];
+        if (local) { o.status = local.status; o.doneAt = local.doneAt; }
+      }
+    });
+
     cacheOrders(orders);
     _allOrders = orders;
     _detectAndAlert(orders);
@@ -1061,6 +1071,13 @@ async function runPoll() {
 // ── DETECT NEW ORDERS + FIRE ALERTS ──
 function _detectAndAlert(orders) {
   var now     = Date.now();
+  // Override status for locally-marked-done orders so Firebase push never reverts them
+  orders = orders.map(function(o){
+    if (_doneLocally[o.orderNum] && o.status === 'pending') {
+      return Object.assign({}, o, {status:'done', doneAt: o.doneAt || new Date().toISOString()});
+    }
+    return o;
+  });
   var cleaned = _cleanOrders(orders, now);
   var pending = cleaned.filter(function(o){ return o.status === 'pending'; });
   var currentNums = pending.map(function(o){ return o.orderNum; });
@@ -1100,6 +1117,13 @@ function _cleanOrders(orders, now) {
 
 function _paintOrders(orders) {
   var now     = Date.now();
+  // Override status for locally-marked-done orders so Firebase push never reverts them
+  orders = orders.map(function(o){
+    if (_doneLocally[o.orderNum] && o.status === 'pending') {
+      return Object.assign({}, o, {status:'done', doneAt: o.doneAt || new Date().toISOString()});
+    }
+    return o;
+  });
   var cleaned = _cleanOrders(orders, now);
   var pending = cleaned.filter(function(o){ return o.status === 'pending'; });
   var done    = cleaned.filter(function(o){ return o.status === 'done'; });
@@ -1191,33 +1215,57 @@ function renderCol(colId, list, status) {
 }
 
 // ── MARK DONE ──
+// _doneLocally: orders marked done locally — Firebase listener must respect these
+var _doneLocally = {};
+
 async function markDone(orderNum) {
-  // 1. Optimistic UI: update in-memory store and repaint immediately
+  if (_doneLocally[orderNum]) return; // prevent double tap
+  _doneLocally[orderNum] = true;
+
+  // 1. Update button immediately
   var card = document.getElementById('card-' + orderNum);
   if (card) {
     var btn = card.querySelector('.mark-done-btn');
     if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
   }
+
   var doneAt = new Date().toISOString();
-  _allOrders.forEach(function(o){ if(o.orderNum===orderNum){ o.status='done'; o.doneAt=doneAt; } });
+
+  // 2. Update in-memory store immediately
+  _allOrders.forEach(function(o){
+    if (o.orderNum === orderNum) { o.status = 'done'; o.doneAt = doneAt; }
+  });
   cacheOrders(_allOrders);
   if (_knownOrderNums) _knownOrderNums.delete(orderNum);
+
+  // 3. Repaint UI immediately — order moves from Pending to Completed
   _renderedPendingIds = ''; _renderedDoneIds = '';
   _paintOrders(_allOrders);
 
-  // 2. Write to backend
-  if (_fbReady) {
-    // Single-field update — fastest possible write
-    await fbUpdate(orderNum, {status:'done', doneAt:doneAt});
-    // Firebase listener will confirm automatically
-  } else {
-    var orders = await jbGet();
-    if (orders) {
-      orders.forEach(function(o){ if(o.orderNum===orderNum){ o.status='done'; o.doneAt=doneAt; } });
-      await jbPut(orders);
+  // 4. Write to backend
+  try {
+    if (_fbReady) {
+      await fbUpdate(orderNum, {status:'done', doneAt:doneAt});
+    } else {
+      var orders = await jbGet();
+      if (orders) {
+        orders.forEach(function(o){
+          if (o.orderNum === orderNum) { o.status = 'done'; o.doneAt = doneAt; }
+        });
+        await jbPut(orders);
+      }
     }
+    toast('✓ Order marked done');
+  } catch(e) {
+    toast('❌ Save failed, try again');
+    // Revert on failure — remove from local done set too
+    delete _doneLocally[orderNum];
+    _allOrders.forEach(function(o){
+      if (o.orderNum === orderNum) { o.status = 'pending'; o.doneAt = null; }
+    });
+    _renderedPendingIds = ''; _renderedDoneIds = '';
+    _paintOrders(_allOrders);
   }
-  toast('✓ Order marked done');
 }
 
 // ══════════════════════════════════════════════════════
