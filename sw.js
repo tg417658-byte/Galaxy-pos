@@ -83,14 +83,15 @@ function pollOrders() {
                   (Array.isArray(o.items) ? o.items.length + ' item(s)' : '') +
                   ' • ₹' + (o.total || 0);
       self.registration.showNotification(title, {
-        body:             body,
-        tag:              'order-' + o.orderNum,
+        body:               body,
+        tag:                'order-' + o.orderNum,
         requireInteraction: false,
-        silent:           false,
-        vibrate:          [200, 100, 200, 100, 400],
-        icon:             'https://api.dicebear.com/7.x/icons/svg?seed=galaxy',
-        badge:            'https://api.dicebear.com/7.x/icons/svg?seed=galaxy',
-        data:             { orderNum: o.orderNum, url: self.registration.scope + 'owner.html' }
+        silent:             false,
+        vibrate:            [300,100,300,100,500,100,300,100,300],
+        renotify:           true,
+        icon:               'https://api.dicebear.com/7.x/icons/svg?seed=galaxy',
+        badge:              'https://api.dicebear.com/7.x/icons/svg?seed=galaxy',
+        data:               { orderNum: o.orderNum, url: self.registration.scope + 'owner.html' }
       });
       // Auto-close notification after 3 seconds
       setTimeout(function() {

@@ -260,6 +260,35 @@ body{font-family:var(--font-body);background:var(--bg);color:var(--text);min-hei
 <body>
 <!-- Audio unlock: browser requires user gesture before playing sound.
      We silently unlock AudioContext on first tap/click anywhere. -->
+<script>
+// ── AUDIO UNLOCK ON FIRST USER GESTURE ──
+// Mobile browsers block audio until user taps something.
+// We create and resume AudioContext on first touch/click.
+(function() {
+  function unlock() {
+    try {
+      var ctx = new (window.AudioContext || window.webkitAudioContext)();
+      // Play a silent buffer to fully unlock
+      var buf = ctx.createBuffer(1, 1, 22050);
+      var src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.start(0);
+      ctx.resume().then(function() {
+        window._audioCtxUnlocked = ctx;
+      });
+    } catch(e) {}
+    document.removeEventListener('touchstart', unlock, true);
+    document.removeEventListener('touchend',   unlock, true);
+    document.removeEventListener('click',      unlock, true);
+    document.removeEventListener('keydown',    unlock, true);
+  }
+  document.addEventListener('touchstart', unlock, true);
+  document.addEventListener('touchend',   unlock, true);
+  document.addEventListener('click',      unlock, true);
+  document.addEventListener('keydown',    unlock, true);
+})();
+</script>
 
 
 <!-- ────────── LOGIN ────────── -->
@@ -1192,34 +1221,74 @@ async function markDone(orderNum) {
 }
 
 // ══════════════════════════════════════════════════════
-// ALERT BELL — 5 loud hits, 3-oscillator chord
+// ALERT BELL — loud bell + vibration fallback
 // ══════════════════════════════════════════════════════
 var _lastBellTime = 0;
 function playAlertBell() {
   if (Date.now() - _lastBellTime < 2000) return;
   _lastBellTime = Date.now();
+
+  // ── Vibration (works even when screen is off) ──
   try {
-    if (!_audioCtx) _audioCtx = window._audioCtxUnlocked || new (window.AudioContext || window.webkitAudioContext)();
+    if (navigator.vibrate) {
+      navigator.vibrate([300,100,300,100,500,100,300,100,300]);
+    }
+  } catch(e) {}
+
+  // ── Web Audio bell (loud, works when app is open & foreground) ──
+  try {
+    // Always try to create a fresh context if unlocked one exists
+    if (!_audioCtx) {
+      _audioCtx = window._audioCtxUnlocked || new (window.AudioContext || window.webkitAudioContext)();
+    }
     var ctx = _audioCtx;
-    if (ctx.state === 'suspended') ctx.resume();
-    var t = ctx.currentTime;
-    [0, 0.42, 0.84, 1.26, 1.68].forEach(function(off) {
-      var o1=ctx.createOscillator(), g1=ctx.createGain();
-      o1.connect(g1); g1.connect(ctx.destination);
-      o1.type='sine'; o1.frequency.setValueAtTime(1046,t+off); o1.frequency.exponentialRampToValueAtTime(880,t+off+1.0);
-      g1.gain.setValueAtTime(0,t+off); g1.gain.linearRampToValueAtTime(0.8,t+off+0.006); g1.gain.exponentialRampToValueAtTime(0.001,t+off+1.4);
-      o1.start(t+off); o1.stop(t+off+1.5);
-      var o2=ctx.createOscillator(), g2=ctx.createGain();
-      o2.connect(g2); g2.connect(ctx.destination);
-      o2.type='sine'; o2.frequency.setValueAtTime(2093,t+off);
-      g2.gain.setValueAtTime(0,t+off); g2.gain.linearRampToValueAtTime(0.35,t+off+0.006); g2.gain.exponentialRampToValueAtTime(0.001,t+off+0.7);
-      o2.start(t+off); o2.stop(t+off+0.8);
-      var o3=ctx.createOscillator(), g3=ctx.createGain();
-      o3.connect(g3); g3.connect(ctx.destination);
-      o3.type='sine'; o3.frequency.setValueAtTime(261,t+off);
-      g3.gain.setValueAtTime(0,t+off); g3.gain.linearRampToValueAtTime(0.4,t+off+0.008); g3.gain.exponentialRampToValueAtTime(0.001,t+off+0.5);
-      o3.start(t+off); o3.stop(t+off+0.6);
-    });
+    // Force resume — critical on mobile
+    var playBell = function() {
+      var t = ctx.currentTime;
+      // Master gain for overall volume boost
+      var master = ctx.createGain();
+      master.gain.setValueAtTime(1.5, t);
+      master.connect(ctx.destination);
+
+      [0, 0.45, 0.90, 1.35, 1.80].forEach(function(off) {
+        // Bell tone 1 — main ding
+        var o1=ctx.createOscillator(), g1=ctx.createGain();
+        o1.connect(g1); g1.connect(master);
+        o1.type='sine';
+        o1.frequency.setValueAtTime(1046, t+off);
+        o1.frequency.exponentialRampToValueAtTime(880, t+off+1.0);
+        g1.gain.setValueAtTime(0, t+off);
+        g1.gain.linearRampToValueAtTime(1.0, t+off+0.005);
+        g1.gain.exponentialRampToValueAtTime(0.001, t+off+1.4);
+        o1.start(t+off); o1.stop(t+off+1.5);
+
+        // Bell tone 2 — high overtone
+        var o2=ctx.createOscillator(), g2=ctx.createGain();
+        o2.connect(g2); g2.connect(master);
+        o2.type='sine';
+        o2.frequency.setValueAtTime(2093, t+off);
+        g2.gain.setValueAtTime(0, t+off);
+        g2.gain.linearRampToValueAtTime(0.6, t+off+0.005);
+        g2.gain.exponentialRampToValueAtTime(0.001, t+off+0.7);
+        o2.start(t+off); o2.stop(t+off+0.8);
+
+        // Bell tone 3 — low body
+        var o3=ctx.createOscillator(), g3=ctx.createGain();
+        o3.connect(g3); g3.connect(master);
+        o3.type='triangle';
+        o3.frequency.setValueAtTime(523, t+off);
+        g3.gain.setValueAtTime(0, t+off);
+        g3.gain.linearRampToValueAtTime(0.8, t+off+0.006);
+        g3.gain.exponentialRampToValueAtTime(0.001, t+off+0.6);
+        o3.start(t+off); o3.stop(t+off+0.7);
+      });
+    };
+
+    if (ctx.state === 'suspended') {
+      ctx.resume().then(playBell).catch(function(){});
+    } else {
+      playBell();
+    }
   } catch(e) {}
 }
 
